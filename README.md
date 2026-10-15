@@ -14,22 +14,7 @@ Nothing here touches CloudLab. Never run the motor-manager scripts while MoveIt 
 ## One-time setup on `Y`
 
 ```bash
-ssh-keygen -t ed25519 -f ~/.ssh/arm_control_deploy -N '' -C "Y deploy key for openarmx-arm-control"
-cat ~/.ssh/arm_control_deploy.pub
-```
-
-Add that public key on GitHub: repo **Settings → Deploy keys → Add deploy key**, read-only.
-Then:
-
-```bash
-cat >> ~/.ssh/config <<'EOF'
-Host github-arm-control
-  HostName github.com
-  User git
-  IdentityFile ~/.ssh/arm_control_deploy
-  IdentitiesOnly yes
-EOF
-git clone github-arm-control:brucezhangcy/openarmx-arm-control.git ~/arm_control
+git clone https://github.com/brucezhangcy/openarmx-arm-control.git ~/arm_control
 ```
 
 Update later with `cd ~/arm_control && git pull`.
