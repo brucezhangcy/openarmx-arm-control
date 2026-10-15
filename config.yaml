@@ -1,0 +1,39 @@
+# Settings for ee_goto.py. Values marked MEASURE must come from the real arm
+# before absolute targets are trusted.
+
+planning_frame: world
+group: right_arm
+tip_link: openarmx_right_hand_tcp   # if MoveIt rejects it, see README "Troubleshooting"
+joints:
+  - openarmx_right_joint1
+  - openarmx_right_joint2
+  - openarmx_right_joint3
+  - openarmx_right_joint4
+  - openarmx_right_joint5
+  - openarmx_right_joint6
+  - openarmx_right_joint7
+
+# Motion
+velocity_scaling: 0.1        # fraction of the joint velocity limits
+acceleration_scaling: 0.1
+planning_time_s: 5.0
+planning_attempts: 5
+position_tolerance_m: 0.01   # goal sphere radius around the target
+orientation_tolerance_rad: 0.3   # per axis, around the home gripper orientation
+settle_s: 1.0                # wait after a move before measuring the error
+
+# Safety checks, applied before anything is sent to MoveIt
+safe_box:                    # allowed offset from the HOME gripper position, metres. MEASURE
+  x: [-0.20, 0.20]
+  y: [-0.20, 0.20]
+  z: [-0.10, 0.30]
+max_step_m: 0.15             # largest distance a single move may cover
+
+# The table, added to MoveIt's planning scene so paths avoid it
+table:
+  enabled: false             # set true once top_z_m is measured
+  top_z_m: 0.0               # MEASURE: table surface height in planning_frame
+  center_xy_m: [0.4, 0.0]    # MEASURE roughly; a generous size is fine
+  size_xy_m: [1.2, 0.8]
+  thickness_m: 0.05
+  margin_m: 0.02             # extra clearance added on top of the surface
