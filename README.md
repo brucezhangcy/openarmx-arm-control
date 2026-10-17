@@ -6,6 +6,8 @@ from a terminal on the arm PC (`Y`, reached through the CloudLab terminal).
 - Plans first and prints the plan; moves only after you type `y`, and runs exactly the plan shown.
 - Keeps roughly the home gripper orientation (±0.3 rad); falls back to position-only and says so.
 - Refuses targets outside a safe box around the home gripper position, and moves longer than 0.15 m.
+- Compares several plans and keeps the one with the smallest joint motion; refuses it if any joint
+  would still move more than 0.6 rad (the 7-joint arm can otherwise swing its elbow a lot for a small nudge).
 - Adds the table to MoveIt's planning scene once its height is measured.
 - After each move, prints where the gripper actually ended up and the error.
 

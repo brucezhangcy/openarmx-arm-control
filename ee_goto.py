@@ -36,12 +36,16 @@ from shape_msgs.msg import SolidPrimitive
 from safety import (
     TargetRejected,
     check_target,
+    max_joint_change,
     parse_command,
     resolve_target,
     validate_safe_box,
 )
 
 HERE = Path(__file__).resolve().parent
+
+# A plan whose joints move less than this is accepted without trying more candidates.
+GOOD_ENOUGH_SWING_RAD = 0.15
 
 ERROR_NAMES = {
     value: name
@@ -228,6 +232,15 @@ class ArmClient(Node):
             raise RuntimeError(f"execution ended with {ERROR_NAMES.get(code, code)}")
 
 
+def joint_swing(trajectory):
+    """Largest distance any joint gets from its start value, anywhere along the path."""
+    points = trajectory.joint_trajectory.points
+    if not points:
+        return 0.0
+    start = points[0].positions
+    return max(max_joint_change(start, p.positions) for p in points)
+
+
 def summarize(trajectory):
     jt = trajectory.joint_trajectory
     if not jt.points:
@@ -264,14 +277,21 @@ class Session:
         check_target(target, self.home_xyz, current, self.cfg["safe_box"], float(self.cfg["max_step_m"]))
 
         try:
-            traj = self.arm.plan_to_position(target, self.home_quat)
+            traj, swing = self._best_plan(target, self.home_quat)
             mode = "home orientation"
         except PlanningFailed as e:
             print(f"  no plan keeping the home orientation ({e}); trying position only...")
-            traj = self.arm.plan_to_position(target, None)
+            traj, swing = self._best_plan(target, None)
             mode = "POSITION ONLY: the gripper may turn"
+        limit = float(self.cfg["max_joint_change_rad"])
         print(f"  target  {fmt(target)}")
         print(f"  plan    {summarize(traj)}  [{mode}]")
+        print(f"  largest joint motion {swing:.2f} rad (limit {limit:.2f})")
+        if swing > limit:
+            raise TargetRejected(
+                f"even the best of {self.cfg['plan_candidates']} plans moves a joint {swing:.2f} rad; "
+                "try a smaller step or a different target"
+            )
 
         if not execute:
             return target, None
@@ -284,6 +304,29 @@ class Session:
         error = sum((a - b) ** 2 for a, b in zip(reached, target)) ** 0.5
         print(f"  reached {fmt(reached)}  error {error * 1000:.0f} mm")
         return target, reached
+
+    def _best_plan(self, target, orientation):
+        """Plan several times and keep the plan with the smallest joint motion.
+
+        The arm has 7 joints, so MoveIt can reach one gripper position with many
+        joint configurations and picks one at random; without this, a 3 cm nudge
+        can swing the elbow and wrist by a radian.
+        """
+        best, last_error = None, None
+        for _ in range(int(self.cfg["plan_candidates"])):
+            try:
+                traj = self.arm.plan_to_position(target, orientation)
+            except PlanningFailed as e:
+                last_error = e
+                continue
+            swing = joint_swing(traj)
+            if best is None or swing < best[1]:
+                best = (traj, swing)
+            if swing <= GOOD_ENOUGH_SWING_RAD:
+                break
+        if best is None:
+            raise last_error
+        return best
 
     def go_home(self):
         traj = self.arm.plan_home()

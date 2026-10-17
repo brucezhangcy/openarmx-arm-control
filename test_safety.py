@@ -3,6 +3,7 @@ import unittest
 from safety import (
     TargetRejected,
     check_target,
+    max_joint_change,
     parse_command,
     resolve_target,
     validate_safe_box,
@@ -48,6 +49,18 @@ class CheckTarget(unittest.TestCase):
 
     def test_box_edge_inclusive(self):
         check_target((0.5, -0.2, 0.4), HOME, (0.45, -0.2, 0.4), BOX, 0.15)
+
+
+class MaxJointChange(unittest.TestCase):
+    def test_largest_absolute_change(self):
+        # The joint 5 swing seen in rung 1: -0.98 rad from home.
+        start = [0.0] * 7
+        end = [-0.11, -0.09, 0.82, 0.54, -0.98, 0.68, -0.35]
+        self.assertAlmostEqual(max_joint_change(start, end), 0.98)
+
+    def test_length_mismatch(self):
+        with self.assertRaises(ValueError):
+            max_joint_change([0.0] * 7, [0.0] * 6)
 
 
 class ValidateBox(unittest.TestCase):

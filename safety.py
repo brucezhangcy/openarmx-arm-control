@@ -45,6 +45,13 @@ def check_target(target, home, current, safe_box, max_step):
         )
 
 
+def max_joint_change(start, end):
+    """Largest absolute change of any joint between two joint vectors (rad)."""
+    if len(start) != len(end):
+        raise ValueError("joint vectors differ in length")
+    return max((abs(b - a) for a, b in zip(start, end)), default=0.0)
+
+
 def validate_safe_box(safe_box):
     """Fail fast on a malformed safe_box section in config.yaml."""
     for axis in "xyz":

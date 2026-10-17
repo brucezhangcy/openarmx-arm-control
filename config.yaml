@@ -18,8 +18,10 @@ velocity_scaling: 0.1        # fraction of the joint velocity limits
 acceleration_scaling: 0.1
 planning_time_s: 5.0
 planning_attempts: 5
-position_tolerance_m: 0.01   # goal sphere radius around the target
+position_tolerance_m: 0.005  # goal sphere radius around the target
 orientation_tolerance_rad: 0.3   # per axis, around the home gripper orientation
+plan_candidates: 5           # plans compared per move; the smallest joint motion wins
+max_joint_change_rad: 0.6    # refuse a plan that moves any joint further than this
 settle_s: 1.0                # wait after a move before measuring the error
 
 # Safety checks, applied before anything is sent to MoveIt
