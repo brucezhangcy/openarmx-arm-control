@@ -4,7 +4,9 @@ Move the OpenArmX **right** gripper to a typed x, y, z position, through MoveIt,
 from a terminal on the arm PC (`Y`, reached through the CloudLab terminal).
 
 - Plans first and prints the plan; moves only after you type `y`, and runs exactly the plan shown.
-- Keeps roughly the home gripper orientation (±0.3 rad); falls back to position-only and says so.
+- Solves for the joint angles nearest the current ones, keeping the current gripper orientation
+  (after `home`, that is the home orientation). If that fails, it falls back to sampled planning
+  within ±0.3 rad of the home orientation, then to position-only, and says which it used.
 - Refuses targets outside a safe box around the home gripper position, and moves longer than 0.15 m.
 - Compares several plans and keeps the one with the smallest joint motion; refuses it if any joint
   would still move more than 0.6 rad (the 7-joint arm can otherwise swing its elbow a lot for a small nudge).

@@ -16,7 +16,8 @@ from pathlib import Path
 import rclpy
 import tf2_ros
 import yaml
-from geometry_msgs.msg import Point, Pose, Quaternion
+from builtin_interfaces.msg import Duration
+from geometry_msgs.msg import Point, Pose, PoseStamped, Quaternion
 from moveit_msgs.action import ExecuteTrajectory, MoveGroup
 from moveit_msgs.msg import (
     CollisionObject,
@@ -27,7 +28,7 @@ from moveit_msgs.msg import (
     PlanningScene,
     PositionConstraint,
 )
-from moveit_msgs.srv import ApplyPlanningScene, GetPositionFK
+from moveit_msgs.srv import ApplyPlanningScene, GetPositionFK, GetPositionIK
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.time import Time
@@ -81,6 +82,7 @@ class ArmClient(Node):
         self.move_client = ActionClient(self, MoveGroup, "/move_action")
         self.exec_client = ActionClient(self, ExecuteTrajectory, "/execute_trajectory")
         self.fk_client = self.create_client(GetPositionFK, "/compute_fk")
+        self.ik_client = self.create_client(GetPositionIK, "/compute_ik")
         self.scene_client = self.create_client(ApplyPlanningScene, "/apply_planning_scene")
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
@@ -103,6 +105,7 @@ class ArmClient(Node):
             (self.move_client.wait_for_server, "/move_action"),
             (self.exec_client.wait_for_server, "/execute_trajectory"),
             (self.fk_client.wait_for_service, "/compute_fk"),
+            (self.ik_client.wait_for_service, "/compute_ik"),
             (self.scene_client.wait_for_service, "/apply_planning_scene"),
         ]
         for wait, name in checks:
@@ -111,15 +114,19 @@ class ArmClient(Node):
 
     # -- reading the arm ----------------------------------------------------
 
-    def current_position(self, timeout=3.0):
-        """Gripper position from TF, i.e. from the measured joint angles."""
+    def current_pose(self, timeout=3.0):
+        """Gripper position and orientation from TF, i.e. from the measured joint angles."""
         end = self.get_clock().now().nanoseconds + int(timeout * 1e9)
         while not self.tf_buffer.can_transform(self.frame, self.link, Time()):
             if self.get_clock().now().nanoseconds > end:
                 raise TimeoutError(f"no transform {self.frame} -> {self.link} (is joint_states publishing?)")
             rclpy.spin_once(self, timeout_sec=0.05)
-        t = self.tf_buffer.lookup_transform(self.frame, self.link, Time()).transform.translation
-        return (t.x, t.y, t.z)
+        tf = self.tf_buffer.lookup_transform(self.frame, self.link, Time()).transform
+        t, r = tf.translation, tf.rotation
+        return (t.x, t.y, t.z), Quaternion(x=r.x, y=r.y, z=r.z, w=r.w)
+
+    def current_position(self, timeout=3.0):
+        return self.current_pose(timeout)[0]
 
     def home_pose(self):
         """Gripper pose with all right-arm joints at zero, from MoveIt's forward kinematics."""
@@ -205,13 +212,41 @@ class ArmClient(Node):
             c.orientation_constraints = [oc]
         return self._plan(c)
 
-    def plan_home(self):
+    def solve_ik(self, target, orientation):
+        """Joint angles that put the gripper at target with this orientation.
+
+        The solver starts from the current joint angles, so it returns the
+        nearest solution instead of a random one of the arm's many.
+        """
+        req = GetPositionIK.Request()
+        ik = req.ik_request
+        ik.group_name = self.cfg["group"]
+        ik.robot_state.is_diff = True  # seed: the current measured state
+        ik.avoid_collisions = True
+        ik.ik_link_name = self.link
+        ik.pose_stamped = PoseStamped(pose=Pose(
+            position=Point(x=target[0], y=target[1], z=target[2]), orientation=orientation))
+        ik.pose_stamped.header.frame_id = self.frame
+        ik.timeout = Duration(sec=0, nanosec=200_000_000)
+        res = self._wait(self.ik_client.call_async(req), 5.0, "/compute_ik")
+        if res.error_code.val != MoveItErrorCodes.SUCCESS:
+            raise PlanningFailed(ERROR_NAMES.get(res.error_code.val, str(res.error_code.val)))
+        solved = dict(zip(res.solution.joint_state.name, res.solution.joint_state.position))
+        missing = [j for j in self.cfg["joints"] if j not in solved]
+        if missing:
+            raise PlanningFailed(f"IK answer lacks joints {missing}")
+        return [solved[j] for j in self.cfg["joints"]]
+
+    def plan_to_joints(self, positions):
         c = Constraints()
         c.joint_constraints = [
-            JointConstraint(joint_name=j, position=0.0, tolerance_above=0.01, tolerance_below=0.01, weight=1.0)
-            for j in self.cfg["joints"]
+            JointConstraint(joint_name=j, position=float(p), tolerance_above=0.01, tolerance_below=0.01, weight=1.0)
+            for j, p in zip(self.cfg["joints"], positions)
         ]
         return self._plan(c)
+
+    def plan_home(self):
+        return self.plan_to_joints([0.0] * len(self.cfg["joints"]))
 
     def execute(self, trajectory):
         """Run exactly the trajectory that was shown. Ctrl+C asks MoveIt to stop it."""
@@ -272,25 +307,32 @@ class Session:
         for the motion to run. Returns (target, reached); reached is None when
         nothing moved.
         """
-        current = self.arm.current_position()
+        current, current_quat = self.arm.current_pose()
         target = resolve_target([x, y, z], current, relative)
         check_target(target, self.home_xyz, current, self.cfg["safe_box"], float(self.cfg["max_step_m"]))
 
+        # First choice: the joint angles nearest the current ones, keeping the
+        # current gripper orientation. The sampled routes below are fallbacks.
         try:
-            traj, swing = self._best_plan(target, self.home_quat)
-            mode = "home orientation"
+            goal = self.arm.solve_ik(target, current_quat)
+            traj, swing = self._best_plan(lambda: self.arm.plan_to_joints(goal))
+            mode = "nearest joints, orientation kept"
         except PlanningFailed as e:
-            print(f"  no plan keeping the home orientation ({e}); trying position only...")
-            traj, swing = self._best_plan(target, None)
-            mode = "POSITION ONLY: the gripper may turn"
+            print(f"  no solution near the current joints ({e}); sampling instead...")
+            try:
+                traj, swing = self._best_plan(lambda: self.arm.plan_to_position(target, self.home_quat))
+                mode = "sampled, home orientation"
+            except PlanningFailed as e2:
+                print(f"  no plan keeping the home orientation ({e2}); trying position only...")
+                traj, swing = self._best_plan(lambda: self.arm.plan_to_position(target, None))
+                mode = "POSITION ONLY: the gripper may turn"
         limit = float(self.cfg["max_joint_change_rad"])
         print(f"  target  {fmt(target)}")
         print(f"  plan    {summarize(traj)}  [{mode}]")
         print(f"  largest joint motion {swing:.2f} rad (limit {limit:.2f})")
         if swing > limit:
             raise TargetRejected(
-                f"even the best of {self.cfg['plan_candidates']} plans moves a joint {swing:.2f} rad; "
-                "try a smaller step or a different target"
+                f"the best plan moves a joint {swing:.2f} rad; try a smaller step or a different target"
             )
 
         if not execute:
@@ -305,17 +347,17 @@ class Session:
         print(f"  reached {fmt(reached)}  error {error * 1000:.0f} mm")
         return target, reached
 
-    def _best_plan(self, target, orientation):
-        """Plan several times and keep the plan with the smallest joint motion.
+    def _best_plan(self, plan):
+        """Call plan() several times and keep the result with the smallest joint motion.
 
-        The arm has 7 joints, so MoveIt can reach one gripper position with many
-        joint configurations and picks one at random; without this, a 3 cm nudge
-        can swing the elbow and wrist by a radian.
+        The arm has 7 joints, so a gripper position has many joint solutions and
+        sampled planning picks one at random; even with a fixed joint goal, the
+        planner's path can wander. Comparing candidates keeps motions small.
         """
         best, last_error = None, None
         for _ in range(int(self.cfg["plan_candidates"])):
             try:
-                traj = self.arm.plan_to_position(target, orientation)
+                traj = plan()
             except PlanningFailed as e:
                 last_error = e
                 continue
